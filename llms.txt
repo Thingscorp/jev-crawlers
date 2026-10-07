@@ -1,0 +1,23 @@
+# jev-crawlers
+
+Small unix tools for bug-discovery, powered by Jev. One tool, one job,
+JSON lines on stdin/stdout, composed with pipes. Jev learns a repo's
+decision norms, then adversarially judges past decisions against them.
+
+- Repo: https://github.com/Thingscorp/jev-crawlers
+- Docs: https://github.com/Thingscorp/jev-crawlers#readme
+
+## Tools (`bin/`)
+
+`crawl` (orchestrator) · `jev-seed.mjs` · `jev-expand.mjs` ·
+`jev-judge.mjs` · `jev-verify.mjs` · `jev-report.mjs` · `jev-verdict.mjs`
+
+```sh
+./bin/crawl --repo ./my-app --dry-run --budget 8   # no key needed
+```
+
+## Configuration
+
+`--api-key` flag → `$AI_GATEWAY_API_KEY` → `api_key=` in
+`~/.config/jev-crawlers/config`. Exit codes: 0 success, 1 runtime error,
+2 usage/config error. `--help` on every tool; `--json` for machine output.
