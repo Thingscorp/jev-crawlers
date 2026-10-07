@@ -39,20 +39,63 @@
 // Writes findings, one per line (NDJSON):
 //   { node, judgment, status: "bug" | "unverified-lead" | "escalated",
 //     artifact: { kind, text } | null }
+import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readStdinJson, asArray, writeJsonl, fail, readFileSafe } from '../lib/io.mjs';
 import { findingFingerprint } from '../lib/fingerprint.mjs';
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+function printVersion() {
+  let v = 'unknown';
+  try { v = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8')).version || v; } catch {}
+  console.log(`jev-verify ${v}`);
+  process.exit(0);
+}
+
+function printHelp() {
+  console.log(`usage: jev-verify [--risk-floor 1] [--repo PATH] [--no-color] [--version] < judged.json
+
+Dependency-light gate for any Jev pipeline: pipe { node, judgment }
+records in (NDJSON or a JSON array), get findings out, one per line
+(NDJSON) — already machine-readable. Needs only node >= 20 and
+lib/io.mjs — no Jev calls, no key.
+
+The verifier builds a falsifiable artifact per report candidate and
+checks it is grounded: every cited file:line must exist on disk with
+matching content. A fabricated or missing citation demotes the finding
+to an unverified lead — never a bug.
+
+Options:
+  --risk-floor F   minimum risk score to verify (default: 1)
+  --repo PATH      repo to ground citations against (default: cwd)
+  --no-color       no color output (output is plain text anyway)
+  -h, --help       this help
+  --version        print version
+
+Output statuses: bug | unverified-lead | escalated. Escalated routings
+(escalate-owner, needs-artifact, review-queue) pass through untouched;
+expand/prune routings are not findings and produce no output.
+
+Exit codes: 0 success, 1 runtime error, 2 usage/config error.
+
+Examples:
+  jev-seed --repo /path/to/repo --diff | jev-judge | jev-verify --repo /path/to/repo
+  some-other-pipeline --format ndjson | jev-verify --repo /path/to/code --risk-floor 2`);
+  process.exit(0);
+}
+
 const args = process.argv.slice(2);
-let riskFloor = 1, repo = process.cwd();
+let riskFloor = 1, repo = process.cwd(), noColor = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--risk-floor' && args[i + 1]) riskFloor = parseFloat(args[++i]);
   else if (a === '--repo' && args[i + 1]) repo = args[++i];
-  else if (a === '--help' || a === '-h') {
-    console.log('usage: jev-verify [--risk-floor 1] [--repo PATH] < judged.json');
-    process.exit(0);
-  } else fail(`unknown arg ${a}`, 64);
+  else if (a === '--no-color') noColor = true;
+  else if (a === '--version') printVersion();
+  else if (a === '--help' || a === '-h') printHelp();
+  else fail(`unknown arg ${a}`, 2);
 }
 
 const input = await readStdinJson();

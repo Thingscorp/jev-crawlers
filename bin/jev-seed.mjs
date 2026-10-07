@@ -6,24 +6,64 @@
 // crawl driver.
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { writeJsonl, readFileSafe, fail } from '../lib/io.mjs';
 import { withId } from '../lib/graph.mjs';
 import { loadIgnores, grepRegex, enclosingScope, gitDiffFiles } from '../lib/search.mjs';
 import { loadVerdicts, isExpired, verdictDate } from '../lib/verdicts.mjs';
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+function printVersion() {
+  let v = 'unknown';
+  try { v = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8')).version || v; } catch {}
+  console.log(`jev-seed ${v}`);
+  process.exit(0);
+}
+
+function printHelp() {
+  console.log(`usage: jev-seed --repo PATH [--diff] [--todo] [--patterns] [--base HEAD]
+                [--only a.js,b.js] [--no-color] [--version]
+
+Emit starting leads as NDJSON (one seed node per line). Sources:
+  --diff      symbols touched by git diff vs --base (default HEAD)
+  --todo      TODO/FIXME/XXX/HACK comments
+  --patterns  risky patterns: auth, money movement, eval, dynamic require,
+              shell, raw HTML, reflected XSS (pattern table in source)
+
+Options:
+  --repo PATH     repo to seed from (default: current directory)
+  --base REF      diff base for --diff (default: HEAD)
+  --only F,...    restrict to these files
+  --no-color      no color output (output is plain text anyway)
+  -h, --help      this help
+  --version       print version
+
+Output is NDJSON on stdout — already machine-readable. Human
+false-positive verdicts in data/fp-verdicts.json suppress exact repeats;
+suppressions log to stderr so runs stay auditable.
+
+Exit codes: 0 success, 1 runtime error, 2 usage/config error.
+
+Examples:
+  jev-seed --repo /path/to/repo --diff
+  jev-seed --repo /path/to/repo --todo --patterns | jev-expand --repo /path/to/repo`);
+  process.exit(0);
+}
+
 const args = process.argv.slice(2);
-let repo = process.cwd(), base = 'HEAD', seeds = [], only = null;
+let repo = process.cwd(), base = 'HEAD', seeds = [], only = null, noColor = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--repo' && args[i + 1]) repo = args[++i];
   else if (a === '--base' && args[i + 1]) base = args[++i];
   else if (a === '--diff' || a === '--todo' || a === '--patterns') seeds.push(a.slice(2));
   else if (a === '--only' && args[i + 1]) only = args[++i].split(',');
-  else if (a === '--help' || a === '-h') {
-    console.log('usage: jev-seed --repo PATH [--diff] [--todo] [--patterns] [--base HEAD] [--only a.js,b.js]');
-    process.exit(0);
-  } else fail(`unknown arg ${a}`, 64);
+  else if (a === '--no-color') noColor = true;
+  else if (a === '--version') printVersion();
+  else if (a === '--help' || a === '-h') printHelp();
+  else fail(`unknown arg ${a}`, 2);
 }
 if (!seeds.length) seeds = ['diff', 'todo', 'patterns'];
 const isIgnored = loadIgnores(repo);

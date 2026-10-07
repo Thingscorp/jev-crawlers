@@ -10,18 +10,60 @@ import { readStdinJson, asArray, writeJsonl, fail, readFileSafe } from '../lib/i
 import { withId } from '../lib/graph.mjs';
 import { loadIgnores, grepSymbol, coChangedFiles, configReferences, fileExcerpt } from '../lib/search.mjs';
 import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+function printVersion() {
+  let v = 'unknown';
+  try { v = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8')).version || v; } catch {}
+  console.log(`jev-expand ${v}`);
+  process.exit(0);
+}
+
+function printHelp() {
+  console.log(`usage: jev-expand --repo PATH [--kinds symbol-refs,co-change,config-ref]
+                  [--max-children N] [--no-color] [--version] < node.json
+
+Follow context cues from one node (or a JSON array of nodes) to child
+leads. Mechanical only — no model calls, no key needed:
+  symbol-refs  other files that mention the node's symbol
+  co-change    files that historically change with the node's file
+  config-ref   config files that reference the symbol
+
+Options:
+  --repo PATH        repo under audit (default: current directory)
+  --kinds LIST       comma-separated subset of the three kinds above
+                     (default: all three)
+  --max-children N   cap per input batch (default: 12)
+  --no-color         no color output (output is plain text anyway)
+  -h, --help         this help
+  --version          print version
+
+Reads NDJSON-or-array on stdin; writes one child node per line (NDJSON) —
+already machine-readable.
+
+Exit codes: 0 success, 1 runtime error, 2 usage/config error.
+
+Examples:
+  jev-seed --repo /path/to/repo --diff | jev-expand --repo /path/to/repo
+  echo '{"file":"a.js","symbol":"pay","scope":"pay","depth":0}' \\
+    | jev-expand --repo /path/to/repo --kinds symbol-refs`);
+  process.exit(0);
+}
 
 const args = process.argv.slice(2);
-let repo = process.cwd(), kinds = ['symbol-refs', 'co-change', 'config-ref'], maxChildren = 12;
+let repo = process.cwd(), kinds = ['symbol-refs', 'co-change', 'config-ref'], maxChildren = 12, noColor = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--repo' && args[i + 1]) repo = args[++i];
   else if (a === '--kinds' && args[i + 1]) kinds = args[++i].split(',');
   else if (a === '--max-children' && args[i + 1]) maxChildren = parseInt(args[++i], 10);
-  else if (a === '--help' || a === '-h') {
-    console.log('usage: jev-expand --repo PATH [--kinds symbol-refs,co-change,config-ref] [--max-children N] < node.json');
-    process.exit(0);
-  } else fail(`unknown arg ${a}`, 64);
+  else if (a === '--no-color') noColor = true;
+  else if (a === '--version') printVersion();
+  else if (a === '--help' || a === '-h') printHelp();
+  else fail(`unknown arg ${a}`, 2);
 }
 
 const input = await readStdinJson();

@@ -23,10 +23,69 @@ import { attachEvidence } from '../lib/evidence.mjs';
 import { fail } from '../lib/io.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+function printVersion() {
+  let v = 'unknown';
+  try { v = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8')).version || v; } catch {}
+  console.log(`crawl ${v}`);
+  process.exit(0);
+}
+
+function printHelp() {
+  console.log(`usage: crawl --repo PATH [--seed diff|todo|patterns] [--base HEAD] [--budget 60]
+             [--depth 6] [--decay 0.85] [--max-children 12] [--only a.js,b.js]
+             [--api-key KEY] [--out report.md] [--json [report.json]]
+             [--stats-json] [--telemetry] [--dry-run] [--no-color] [--version]
+
+Orchestrate the jev-seed | jev-judge | jev-expand loop, then jev-verify
+and jev-report. Stages speak NDJSON on stdin/stdout; this driver owns the
+frontier, the visited set, budgets, and the four stop rules (budget spent,
+depth cap, empty frontier, diminishing returns: 8 straight low-risk
+outcomes).
+
+Options:
+  --repo PATH        repo to crawl (default: current directory)
+  --seed KIND        repeatable; diff | todo | patterns (default: all three)
+  --base REF         diff base for --seed diff (default: HEAD)
+  --budget N         max Jev judgments (default: 60)
+  --depth N          max expansion depth (default: 6)
+  --decay F          child priority decay per depth (default: 0.85)
+  --max-children N   expansion cap per node (default: 12)
+  --only F,...       restrict seeds to these files
+  --api-key KEY      Vercel AI Gateway key (see Configuration below)
+  --out FILE         write the Markdown report to FILE (default: stdout)
+  --json [FILE]      write findings JSON; to FILE, or to stdout when bare
+  --stats-json       write run stats as JSON to stderr
+  --telemetry        append one NDJSON record of run counts/timings/cost
+                     to data/telemetry.jsonl (opt-in; off by default).
+                     Never records file paths, source, excerpts, or
+                     finding details. See docs/TELEMETRY.md.
+  --dry-run          stub judgments (expand everything); no Jev calls,
+                     no key needed
+  --no-color         no color output (output is plain text anyway)
+  -h, --help         this help
+  --version          print version
+
+Configuration — the gateway key, first source found wins:
+  --api-key flag; $AI_GATEWAY_API_KEY; api_key= in
+  ~/.config/jev-crawlers/config (KEY=VALUE lines, # comments).
+  A key is required unless --dry-run. It is never prompted for, never
+  logged, and never stored in a repo.
+
+Exit codes: 0 success, 1 runtime error, 2 usage/config error.
+
+Examples:
+  crawl --repo /path/to/repo --seed diff --budget 40 --out report.md
+  crawl --repo ./examples/todo-app --dry-run --budget 8
+  crawl --repo /path/to/repo --seed patterns --json findings.json`);
+  process.exit(0);
+}
+
 const args = process.argv.slice(2);
 let repo = process.cwd(), seedKinds = [], base = 'HEAD', budget = 60, maxDepth = 6,
-  decay = 0.85, maxChildren = 12, outFile = null, jsonFile = null, dryRun = false,
-  only = null, statsJson = false, telemetry = false;
+  decay = 0.85, maxChildren = 12, outFile = null, jsonFile = null, jsonStdout = false,
+  dryRun = false, only = null, statsJson = false, telemetry = false, noColor = false,
+  apiKey = null;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--repo' && args[i + 1]) repo = args[++i];
@@ -34,29 +93,30 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--base' && args[i + 1]) base = args[++i];
   else if (a === '--budget' && args[i + 1]) {
     budget = parseInt(args[++i], 10);
-    if (!Number.isInteger(budget) || budget < 0) fail(`--budget must be a non-negative integer (got "${args[i]}")`, 64);
+    if (!Number.isInteger(budget) || budget < 0) fail(`--budget must be a non-negative integer (got "${args[i]}")`, 2);
   }
   else if (a === '--depth' && args[i + 1]) maxDepth = parseInt(args[++i], 10);
   else if (a === '--decay' && args[i + 1]) decay = parseFloat(args[++i]);
   else if (a === '--max-children' && args[i + 1]) maxChildren = parseInt(args[++i], 10);
   else if (a === '--only' && args[i + 1]) only = args[++i];
+  else if (a === '--api-key' && args[i + 1]) apiKey = args[++i];
   else if (a === '--out' && args[i + 1]) outFile = args[++i];
-  else if (a === '--json' && args[i + 1]) jsonFile = args[++i];
+  else if (a === '--json' && args[i + 1] && !args[i + 1].startsWith('-')) jsonFile = args[++i];
+  else if (a === '--json') jsonStdout = true;
   else if (a === '--stats-json') statsJson = true;
   else if (a === '--telemetry') telemetry = true;
   else if (a === '--dry-run') dryRun = true;
-  else if (a === '--help' || a === '-h') {
-    console.log(`usage: crawl --repo PATH [--seed diff|todo|patterns] [--base HEAD] [--budget 60]
-             [--depth 6] [--decay 0.85] [--max-children 12] [--only a.js,b.js]
-             [--out report.md] [--json report.json] [--stats-json] [--telemetry] [--dry-run]`);
-    console.log('  --telemetry: append one NDJSON record of run counts/timings/cost');
-    console.log('    to data/telemetry.jsonl (opt-in; off by default). Never records');
-    console.log('    file paths, source, excerpts, or finding details. See docs/TELEMETRY.md.');
-    process.exit(0);
-  } else fail(`unknown arg ${a}`, 64);
+  else if (a === '--no-color') noColor = true;
+  else if (a === '--version') printVersion();
+  else if (a === '--help' || a === '-h') printHelp();
+  else fail(`unknown arg ${a}`, 2);
 }
 if (!seedKinds.length) seedKinds = ['diff', 'todo', 'patterns'];
 repo = path.resolve(repo);
+// A --api-key flag is exported so the Jev stage (and any other child)
+// picks it up; prefer the config file or env var to keep it out of
+// shell history and process listings.
+if (apiKey) process.env.AI_GATEWAY_API_KEY = apiKey;
 
 const t0 = Date.now();
 const timingsMs = { seed: 0, judge: 0, expand: 0, verify: 0, report: 0 };
@@ -76,7 +136,7 @@ for (const s of seedKinds) seedArgs.push('--' + s);
 let seeds;
 try {
   seeds = pipe('jev-seed.mjs', seedArgs, null);
-} catch (e) { fail(`jev-seed failed: ${e.message}`, 2); }
+} catch (e) { fail(`jev-seed failed: ${e.message}`, 1); }
 timingsMs.seed = Date.now() - tSeed;
 for (const s of seeds) {
   withId(s);
@@ -186,7 +246,7 @@ if (candidates.length) {
     const tVerify = Date.now();
     verified = pipe('jev-verify.mjs', [], candidates);
     timingsMs.verify = Date.now() - tVerify;
-  } catch (e) { fail(`jev-verify failed: ${e.message}`, 2); }
+  } catch (e) { fail(`jev-verify failed: ${e.message}`, 1); }
 }
 let report = '';
 try {
@@ -194,12 +254,13 @@ try {
   const reportArgs = ['--stats', JSON.stringify(stats)];
   if (outFile) reportArgs.push('--out', outFile);
   if (jsonFile) reportArgs.push('--json', jsonFile);
+  else if (jsonStdout) reportArgs.push('--json');
   report = execFileSync('node', [path.join(HERE, 'jev-report.mjs'), ...reportArgs], {
     cwd: repo, encoding: 'utf8', env: process.env,
     input: verified.map((v) => JSON.stringify(v)).join('\n') + '\n', stdio: ['pipe', 'pipe', 'inherit'], maxBuffer: 64 * 1024 * 1024,
   });
   timingsMs.report = Date.now() - tReport;
-} catch (e) { fail(`jev-report failed: ${e.message}`, 2); }
+} catch (e) { fail(`jev-report failed: ${e.message}`, 1); }
 
 timingsMs.total = Date.now() - t0;
 
